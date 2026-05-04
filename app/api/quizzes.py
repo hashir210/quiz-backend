@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.deps import require_teacher
 from app.models.user import User
@@ -11,7 +12,7 @@ from app.schemas.quiz import (
     QuizDetailResponse, QuestionCreate, QuestionUpdate
 )
 from app.core.config import settings
-import uuid, io, qrcode, httpx
+import uuid, io, httpx
 
 router = APIRouter()
 
@@ -78,7 +79,11 @@ async def get_quiz(
     teacher: User = Depends(require_teacher),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Quiz).where(Quiz.id == quiz_id))
+    result = await db.execute(
+        select(Quiz)
+        .options(selectinload(Quiz.questions))
+        .where(Quiz.id == quiz_id)
+    )
     quiz = result.scalar_one_or_none()
     if not quiz:
         raise HTTPException(404, "Quiz not found")
@@ -148,6 +153,23 @@ async def add_question(
     return question
 
 
+@router.delete("/{quiz_id}/questions")
+async def delete_all_questions(
+    quiz_id: str,
+    teacher: User = Depends(require_teacher),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Quiz).where(Quiz.id == quiz_id))
+    quiz = result.scalar_one_or_none()
+    if not quiz or str(quiz.teacher_id) != str(teacher.id):
+        raise HTTPException(403, "Not your quiz")
+    
+    from sqlalchemy import delete
+    await db.execute(delete(Question).where(Question.quiz_id == quiz_id))
+    await db.commit()
+    return {"message": "All questions deleted"}
+
+
 @router.put("/questions/{question_id}")
 async def update_question(
     question_id: str,
@@ -155,10 +177,17 @@ async def update_question(
     teacher: User = Depends(require_teacher),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Question).where(Question.id == question_id))
+    query = select(Question).join(Quiz, Question.quiz_id == Quiz.id).where(Question.id == question_id)
+    if teacher.role != "admin":
+        query = query.where(Quiz.teacher_id == teacher.id)
+    result = await db.execute(query)
     question = result.scalar_one_or_none()
     if not question:
         raise HTTPException(404, "Question not found")
+    if data.options is not None and len(data.options) != 4:
+        raise HTTPException(400, "Exactly 4 options required")
+    if data.correct_option is not None and data.correct_option not in [0, 1, 2, 3]:
+        raise HTTPException(400, "correct_option must be 0, 1, 2, or 3")
     for key, val in data.model_dump(exclude_none=True).items():
         setattr(question, key, val)
     await db.commit()
@@ -171,7 +200,10 @@ async def delete_question(
     teacher: User = Depends(require_teacher),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Question).where(Question.id == question_id))
+    query = select(Question).join(Quiz, Question.quiz_id == Quiz.id).where(Question.id == question_id)
+    if teacher.role != "admin":
+        query = query.where(Quiz.teacher_id == teacher.id)
+    result = await db.execute(query)
     question = result.scalar_one_or_none()
     if not question:
         raise HTTPException(404, "Question not found")
@@ -196,24 +228,3 @@ async def upload_image(
     file_bytes = await file.read()
     url = await upload_to_supabase(file_bytes, file.filename, file.content_type)
     return {"url": url}
-
-
-# ── QR Code ───────────────────────────────────────────────
-
-@router.get("/{quiz_id}/qr")
-async def get_qr_code(
-    quiz_id: str,
-    teacher: User = Depends(require_teacher),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(Quiz).where(Quiz.id == quiz_id))
-    quiz = result.scalar_one_or_none()
-    if not quiz:
-        raise HTTPException(404, "Quiz not found")
-    frontend_url = settings.FRONTEND_URL
-    join_url = f"{frontend_url}/play/{quiz_id}"
-    img = qrcode.make(join_url)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="image/png")

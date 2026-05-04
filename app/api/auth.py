@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password, create_access_token
-from app.core.deps import get_current_user, require_admin
+from app.core.deps import get_current_user
 from app.models.user import User
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, UserResponse
 
@@ -69,9 +69,20 @@ async def update_me(
 ):
     if "name" in data:
         current_user.name = data["name"]
+    if "email" in data:
+        email = data["email"].strip().lower()
+        if email != current_user.email:
+            existing = await db.execute(select(User).where(User.email == email))
+            if existing.scalar_one_or_none():
+                raise HTTPException(status_code=400, detail="Email already registered")
+            current_user.email = email
+    if "avatar_url" in data:
+        current_user.avatar_url = data["avatar_url"]
     if "password" in data:
-        if len(data["password"]) < 6:
-            raise HTTPException(400, "Password too short")
+        if not verify_password(data.get("current_password", ""), current_user.password_hash):
+            raise HTTPException(400, "Current password is incorrect")
+        if len(data["password"]) < 8:
+            raise HTTPException(400, "Password must be at least 8 characters")
         current_user.password_hash = hash_password(data["password"])
     await db.commit()
     return {"message": "Profile updated"}

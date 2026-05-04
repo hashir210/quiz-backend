@@ -15,6 +15,7 @@ class User(Base):
     name          = Column(String, nullable=False)
     role          = Column(String, nullable=False, default="teacher")  # "teacher" | "admin"
     is_active     = Column(Boolean, default=True)
+    avatar_url    = Column(String, nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow)
 
     quizzes = relationship("Quiz", back_populates="teacher", cascade="all, delete-orphan")

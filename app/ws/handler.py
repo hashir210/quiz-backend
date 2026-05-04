@@ -1,12 +1,11 @@
 import time
-import json
 import asyncio
 from fastapi import WebSocket
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.ws.manager import manager
 from app.models.session import Session
-from app.models.quiz import Quiz, Question
+from app.models.quiz import Question
 from app.models.participant import Participant, Answer
 from app.core.database import AsyncSessionLocal
 
@@ -74,7 +73,9 @@ async def handle_event(ws: WebSocket, room_code: str, name: str, role: str, data
 async def send_question(room_code: str, q_index: int):
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(Session).where(Session.room_code == room_code)
+            select(Session)
+            .options(selectinload(Session.quiz))
+            .where(Session.room_code == room_code)
         )
         session = result.scalar_one_or_none()
         if not session:
@@ -103,7 +104,7 @@ async def send_question(room_code: str, q_index: int):
         "text": question.text,
         "options": question.options,
         "image_url": question.image_url,
-        "time_limit": 30,
+        "time_limit": session.quiz.time_per_q,
     })
 
 
@@ -122,17 +123,32 @@ async def handle_answer(ws: WebSocket, room_code: str, name: str, data: dict):
     chosen = data.get("option")
     is_correct = chosen == meta["correct"]
 
-    # Scoring: 1000 points minus 100 per second elapsed, minimum 100 if correct
-    if is_correct:
-        score = max(100, int(1000 - (elapsed * 100)))
-    else:
-        score = 0
+    score = 0
 
     meta["answered"][name] = chosen
+    await manager.broadcast(room_code, {
+        "event": "student_answered",
+        "answered_count": len(meta["answered"]),
+        "students_count": len(manager.get_students(room_code)),
+    })
 
     # Save to database
     async with AsyncSessionLocal() as db:
-        # Get participant
+        s_result = await db.execute(
+            select(Session)
+            .options(selectinload(Session.quiz))
+            .where(Session.room_code == room_code)
+        )
+        session = s_result.scalar_one_or_none()
+        if not session:
+            return
+
+        max_points = session.quiz.max_points
+        time_limit = session.quiz.time_per_q
+        if is_correct:
+            elapsed_ratio = min(elapsed / max(time_limit, 1), 1)
+            score = max(100, int(max_points * (1 - elapsed_ratio * 0.9)))
+
         result = await db.execute(
             select(Participant)
             .join(Participant.session)
@@ -142,6 +158,11 @@ async def handle_answer(ws: WebSocket, room_code: str, name: str, data: dict):
             )
         )
         participant = result.scalar_one_or_none()
+        if not participant:
+            participant = Participant(session_id=session.id, name=name)
+            db.add(participant)
+            await db.flush()
+
         if participant:
             participant.total_score += score
             answer = Answer(
@@ -170,9 +191,11 @@ async def end_quiz(room_code: str):
             select(Session).where(Session.room_code == room_code)
         )
         session = result.scalar_one_or_none()
-        if session:
-            session.status = "finished"
-            await db.commit()
+        if not session:
+            return
+
+        session.status = "finished"
+        await db.commit()
 
         p_result = await db.execute(
             select(Participant)

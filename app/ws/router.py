@@ -5,8 +5,29 @@ from app.models.session import Session
 from app.models.participant import Participant
 from app.core.database import AsyncSessionLocal
 from sqlalchemy import select
+import asyncio
 
 router = APIRouter()
+
+
+async def ensure_participant(room_code: str, name: str):
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Session).where(Session.room_code == room_code)
+        )
+        session = result.scalar_one_or_none()
+        if not session:
+            return
+
+        participant_result = await db.execute(
+            select(Participant).where(
+                Participant.session_id == session.id,
+                Participant.name == name,
+            )
+        )
+        if not participant_result.scalar_one_or_none():
+            db.add(Participant(session_id=session.id, name=name))
+            await db.commit()
 
 
 @router.websocket("/ws/{room_code}")
@@ -24,19 +45,19 @@ async def websocket_endpoint(ws: WebSocket, room_code: str):
     role = init.get("role", "student")   # "student" or "teacher"
     room_code = room_code.upper()
 
-    # For students: create participant record in DB
-    if role == "student":
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(Session).where(Session.room_code == room_code)
-            )
-            session = result.scalar_one_or_none()
-            if session:
-                participant = Participant(session_id=session.id, name=name)
-                db.add(participant)
-                await db.commit()
-
     await manager.connect(ws, room_code, name, role)
+    if role == "student":
+        asyncio.create_task(ensure_participant(room_code, name))
+        await manager.broadcast(room_code, {
+            "event": "student_joined",
+            "name": name,
+            "students": manager.get_students(room_code),
+        })
+    else:
+        await manager.send_to_one(ws, {
+            "event": "room_state",
+            "students": manager.get_students(room_code),
+        })
 
     try:
         while True:
@@ -45,8 +66,9 @@ async def websocket_endpoint(ws: WebSocket, room_code: str):
 
     except WebSocketDisconnect:
         manager.disconnect(ws, room_code)
-        await manager.broadcast(room_code, {
-            "event": "student_left",
-            "name": name,
-            "students": manager.get_students(room_code),
-        })
+        if role == "student":
+            await manager.broadcast(room_code, {
+                "event": "student_left",
+                "name": name,
+                "students": manager.get_students(room_code),
+            })

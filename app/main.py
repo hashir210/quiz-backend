@@ -4,6 +4,18 @@ from app.core.config import settings
 from app.api import auth, quizzes, sessions
 from app.ws.router import router as ws_router
 
+
+allowed_origins = [
+    origin.strip()
+    for origin in settings.FRONTEND_URL.split(",")
+    if origin.strip()
+]
+if settings.ENVIRONMENT == "development":
+    allowed_origins.extend([
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ])
+
 app = FastAPI(
     title="Quiz App API",
     version="1.0.0",
@@ -12,7 +24,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(dict.fromkeys(allowed_origins)),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
