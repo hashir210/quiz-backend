@@ -77,8 +77,8 @@ Start the local development server:
 uvicorn app.main:app --reload
 ```
 
-The API will be available at `http://localhost:8000`. 
-Interactive API documentation (Swagger) can be found at `http://localhost:8000/docs`.
+The API will be available at `http://localhost:8001`. 
+Interactive API documentation (Swagger) can be found at `http://localhost:8001/docs`.
 
 ## 📦 Deployment
 

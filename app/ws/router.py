@@ -47,7 +47,8 @@ async def websocket_endpoint(ws: WebSocket, room_code: str):
 
     await manager.connect(ws, room_code, name, role)
     if role == "student":
-        asyncio.create_task(ensure_participant(room_code, name))
+        # Avoid DB work on join (important for Supabase free tier).
+        # Participant rows are created/updated when answers are flushed.
         await manager.broadcast(room_code, {
             "event": "student_joined",
             "name": name,

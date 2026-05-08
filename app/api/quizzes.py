@@ -25,9 +25,10 @@ async def upload_to_supabase(file_bytes: bytes, filename: str, content_type: str
     file_path = f"questions/{uuid.uuid4()}-{filename}"
 
     async with httpx.AsyncClient() as client:
-        response = await client.post(
+        response = await client.put(
             f"{settings.SUPABASE_URL}/storage/v1/object/{bucket}/{file_path}",
             headers={
+                "apikey": settings.SUPABASE_KEY,
                 "Authorization": f"Bearer {settings.SUPABASE_KEY}",
                 "Content-Type": content_type,
             },
@@ -222,9 +223,9 @@ async def upload_image(
     allowed = ["image/jpeg", "image/png", "image/webp", "image/gif"]
     if file.content_type not in allowed:
         raise HTTPException(400, "Only JPEG, PNG, WebP, GIF allowed")
-    if file.size and file.size > 5 * 1024 * 1024:
-        raise HTTPException(400, "File too large. Max 5MB")
 
     file_bytes = await file.read()
+    if len(file_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large. Max 5MB")
     url = await upload_to_supabase(file_bytes, file.filename, file.content_type)
     return {"url": url}
